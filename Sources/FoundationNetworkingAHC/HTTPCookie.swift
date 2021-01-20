@@ -7,15 +7,7 @@
 // See http://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 //
 
-#if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
-import SwiftFoundation
-#else
 import Foundation
-#endif
-
-#if os(Windows)
-import WinSDK
-#endif
 
 public struct HTTPCookiePropertyKey : RawRepresentable, Equatable, Hashable {
     public private(set) var rawValue: String
@@ -417,7 +409,7 @@ open class HTTPCookie : NSObject {
             return sum + "\(next._name)=\(next._value); "
         }
         //Remove the final trailing semicolon and whitespace
-        if ( cookieString.length > 0 ) {
+        if ( cookieString.count > 0 ) {
             cookieString.removeLast()
             cookieString.removeLast()
         }

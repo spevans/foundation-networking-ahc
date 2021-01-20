@@ -162,12 +162,7 @@
 // -----------------------------------------------------------------------------
 
 
-#if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
-import SwiftFoundation
-#else
 import Foundation
-#endif
-@_implementationOnly import CoreFoundation
 
 extension URLSession {
     public enum DelayedRequestDisposition {

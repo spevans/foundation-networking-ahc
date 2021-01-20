@@ -15,12 +15,7 @@
 ///
 // -----------------------------------------------------------------------------
 
-#if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
-import SwiftFoundation
-#else
 import Foundation
-#endif
-@_implementationOnly import CoreFoundation
 
 private class Bag<Element> {
     var values: [Element] = []

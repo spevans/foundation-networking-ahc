@@ -9,11 +9,7 @@
 
 // Protocol implementation of data: URL scheme
 
-#if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
-import SwiftFoundation
-#else
 import Foundation
-#endif
 
 
 // Iterate through a SubString validating that the input is ASCII and converting any %xx

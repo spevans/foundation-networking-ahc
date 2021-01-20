@@ -7,11 +7,7 @@
 // See http://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 //
 
-#if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
-import SwiftFoundation
-#else
 import Foundation
-#endif
 
 /// An `URLResponse` object represents a URL load response in a
 /// manner independent of protocol and URL scheme.

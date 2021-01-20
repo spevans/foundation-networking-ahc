@@ -16,11 +16,7 @@
 ///
 // -----------------------------------------------------------------------------
 
-#if os(macOS) || os(iOS) || os(watchOS) || os(tvOS)
-import SwiftFoundation
-#else
 import Foundation
-#endif
 
 internal extension URLSession {
     /// This is an immutable / `struct` version of `URLSessionConfiguration`.
