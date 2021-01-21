@@ -6,7 +6,7 @@ import PackageDescription
 let package = Package(
     name: "FoundationNetworkingAHC",
     platforms: [
-        .macOS(.v10_15),
+        .macOS(.v10_15), .iOS(.v14)
     ],
     products: [
         // Products define the executables and libraries a package produces, and make them visible to other packages.
@@ -24,9 +24,15 @@ let package = Package(
         // Targets can depend on other targets in this package, and on products in packages this package depends on.
         .target(
             name: "FoundationNetworkingAHC",
-            dependencies: []),
+            dependencies: [
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
+            ]
+        ),
         .testTarget(
             name: "FoundationNetworkingAHCTests",
-            dependencies: ["FoundationNetworkingAHC"]),
+            dependencies: [
+                "FoundationNetworkingAHC",
+                .product(name: "AsyncHTTPClient", package: "async-http-client"),
+            ]),
     ]
 )
