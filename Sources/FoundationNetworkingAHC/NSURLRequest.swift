@@ -164,6 +164,8 @@ open class NSURLRequest : NSObject, NSSecureCoding, NSCopying, NSMutableCopying 
     }
     
     public required init?(coder aDecoder: NSCoder) {
+        fatalError()
+        #if false
         guard aDecoder.allowsKeyedCoding else {
             preconditionFailure("Unkeyed coding is unsupported.")
         }
@@ -219,6 +221,7 @@ open class NSURLRequest : NSObject, NSSecureCoding, NSCopying, NSMutableCopying 
         
         let encodedUsePipelining = aDecoder.decodeObject(forKey: "NS._httpShouldUsePipelining") as! NSNumber
         self.httpShouldUsePipelining = encodedUsePipelining.boolValue
+        #endif
     }
     
     open func encode(with aCoder: NSCoder) {
@@ -574,7 +577,7 @@ private func existingHeaderField(_ key: String, inHeaderFields fields: [String :
     }
     return nil
 }
-
+/*
 extension NSURLRequest : _StructTypeBridgeable {
     public typealias _StructType = URLRequest
     
@@ -582,3 +585,4 @@ extension NSURLRequest : _StructTypeBridgeable {
         return URLRequest._unconditionallyBridgeFromObjectiveC(self)
     }
 }
+*/
