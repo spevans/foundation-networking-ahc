@@ -17,6 +17,7 @@
 ///
 // -----------------------------------------------------------------------------
 
+#if false
 import Foundation
 import Dispatch
 
@@ -662,3 +663,5 @@ extension URLSession {
         debugPrint(text())
     }
 }
+
+#endif
