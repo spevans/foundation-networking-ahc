@@ -17,10 +17,8 @@
 ///
 // -----------------------------------------------------------------------------
 
+#if false
 import Foundation
-
-@_implementationOnly import CoreFoundation
-@_implementationOnly import CFURLSessionInterface
 import Dispatch
 
 
@@ -684,3 +682,4 @@ extension CFURLSessionEasyCode {
         throw NSError(domain: "libcurl.Easy", code: Int(self.value))
     }
 }
+#endif

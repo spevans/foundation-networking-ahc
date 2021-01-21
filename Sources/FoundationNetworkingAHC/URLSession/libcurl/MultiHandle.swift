@@ -16,6 +16,7 @@
 ///
 // -----------------------------------------------------------------------------
 
+#if false
 import Foundation
 import Dispatch
 
@@ -490,3 +491,4 @@ extension CFURLSessionMultiCode {
         throw NSError(domain: "libcurl.multi", code: Int(self.value))
     }
 }
+#endif

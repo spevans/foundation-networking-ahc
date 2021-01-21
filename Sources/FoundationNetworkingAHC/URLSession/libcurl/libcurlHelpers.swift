@@ -16,9 +16,7 @@
 ///
 // -----------------------------------------------------------------------------
 
-
-@_implementationOnly import CoreFoundation
-@_implementationOnly import CFURLSessionInterface
+#if false
 
 //TODO: Move things in this file?
 
@@ -48,3 +46,4 @@ internal extension String {
         self.init(stringLiteral: result)
     }
 }
+#endif
