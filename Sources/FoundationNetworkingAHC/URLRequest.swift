@@ -12,55 +12,44 @@
 
 import Foundation
 
-public struct URLRequest : ReferenceConvertible, Equatable, Hashable {
+public struct URLRequest: Equatable, Hashable {
     public typealias ReferenceType = NSURLRequest
     public typealias CachePolicy = NSURLRequest.CachePolicy
     public typealias NetworkServiceType = NSURLRequest.NetworkServiceType
-    
+
     /*
      NSURLRequest has a fragile ivar layout that prevents the swift subclass approach here, so instead we keep an always mutable copy
      */
-    internal var _handle: _MutableHandle<NSMutableURLRequest>
-    
-    internal mutating func _applyMutation<ReturnType>(_ whatToDo : (NSMutableURLRequest) -> ReturnType) -> ReturnType {
-        if !isKnownUniquelyReferenced(&_handle) {
-            let ref = _handle._uncopiedReference()
-            _handle = _MutableHandle(reference: ref)
-        }
-        return whatToDo(_handle._uncopiedReference())
-    }
-    
+
     /// Creates and initializes a URLRequest with the given URL and cache policy.
     /// - parameter url: The URL for the request.
     /// - parameter cachePolicy: The cache policy for the request. Defaults to `.useProtocolCachePolicy`
     /// - parameter timeoutInterval: The timeout interval for the request. See the commentary for the `timeoutInterval` for more information on timeout intervals. Defaults to 60.0
     public init(url: URL, cachePolicy: CachePolicy = .useProtocolCachePolicy, timeoutInterval: TimeInterval = 60.0) {
-        _handle = _MutableHandle(adoptingReference: NSMutableURLRequest(url: url, cachePolicy: cachePolicy, timeoutInterval: timeoutInterval))
+        self.url = url
+        self.cachePolicy = cachePolicy
+        self._timeoutInterval = timeoutInterval
     }
     
     fileprivate init(_bridged request: NSURLRequest) {
-        _handle = _MutableHandle(reference: request.mutableCopy() as! NSMutableURLRequest)
+        self.url = request.url
+        self.mainDocumentURL = request.mainDocumentURL
+        self.cachePolicy = request.cachePolicy
+        self.timeoutInterval = request.timeoutInterval
+        self.httpMethod = request.httpMethod
+        self.allHTTPHeaderFields = request.allHTTPHeaderFields
+        self._body = request._body
+        self.networkServiceType = request.networkServiceType
+        self.allowsCellularAccess = request.allowsCellularAccess
+        self.httpShouldHandleCookies = request.httpShouldHandleCookies
+        self.httpShouldUsePipelining = request.httpShouldUsePipelining
     }
     
     /// The URL of the receiver.
-    public var url: URL? {
-        get {
-            return _handle.map { $0.url }
-        }
-        set {
-            _applyMutation { $0.url = newValue }
-        }
-    }
+    public var url: URL?
     
     /// The cache policy of the receiver.
-    public var cachePolicy: CachePolicy {
-        get {
-            return _handle.map { $0.cachePolicy }
-        }
-        set {
-            _applyMutation { $0.cachePolicy = newValue }
-        }
-    }
+    public var cachePolicy: CachePolicy
 
     //URLRequest.timeoutInterval should be given precedence over the URLSessionConfiguration.timeoutIntervalForRequest regardless of the value set,
     // if it has been set at least once. Even though the default value is 60 ,if the user sets URLRequest.timeoutInterval
@@ -78,12 +67,11 @@ public struct URLRequest : ReferenceConvertible, Equatable, Hashable {
     /// becomes greater than or equal to the timeout interval, the request
     /// is considered to have timed out. This timeout interval is measured
     /// in seconds.
+    private var _timeoutInterval: TimeInterval = 60.0
     public var timeoutInterval: TimeInterval {
-        get {
-            return _handle.map { $0.timeoutInterval }
-        }
+        get { _timeoutInterval }
         set {
-            _applyMutation { $0.timeoutInterval = newValue }
+            _timeoutInterval = newValue
             isTimeoutIntervalSet = true
         }
     }
@@ -91,71 +79,47 @@ public struct URLRequest : ReferenceConvertible, Equatable, Hashable {
     /// The main document URL associated with this load.
     /// - discussion: This URL is used for the cookie "same domain as main
     /// document" policy.
-    public var mainDocumentURL: URL? {
-        get {
-            return _handle.map { $0.mainDocumentURL }
-        }
-        set {
-            _applyMutation { $0.mainDocumentURL = newValue }
-        }
-    }
+    public var mainDocumentURL: URL?
     
     /// The URLRequest.NetworkServiceType associated with this request.
     /// - discussion: This will return URLRequest.NetworkServiceType.default for requests that have
     /// not explicitly set a networkServiceType
-    public var networkServiceType: NetworkServiceType {
-        get {
-            return _handle.map { $0.networkServiceType }
-        }
-        set {
-            _applyMutation { $0.networkServiceType = newValue }
-        }
-    }
+    public var networkServiceType: NetworkServiceType = .default
     
     /// `true` if the receiver is allowed to use the built in cellular radios to
     /// satisfy the request, `false` otherwise.
-    public var allowsCellularAccess: Bool {
-        get {
-            return _handle.map { $0.allowsCellularAccess }
-        }
-        set {
-            _applyMutation { $0.allowsCellularAccess = newValue }
-        }
-    }
+    public var allowsCellularAccess: Bool = true
     
     /// The HTTP request method of the receiver.
+    internal var _httpMethod: String? = "GET"
     public var httpMethod: String? {
-        get {
-            return _handle.map { $0.httpMethod }
-        }
+        get { _httpMethod }
         set {
-            _applyMutation {
-                if let value = newValue {
-                    $0.httpMethod = value
-                } else {
-                    $0.httpMethod = "GET"
+            if let method = newValue {
+                ["GET", "HEAD", "POST", "PUT", "DELETE", "CONNECT"].forEach {
+                    if $0 == method.uppercased() {
+                        _httpMethod = method
+                        return
+                    }
                 }
+                _httpMethod = method
+            } else {
+                _httpMethod = "GET"
             }
         }
     }
     
     /// A dictionary containing all the HTTP header fields of the
     /// receiver.
-    public var allHTTPHeaderFields: [String : String]? {
-        get {
-            return _handle.map { $0.allHTTPHeaderFields }
-        }
-        set {
-            _applyMutation { $0.allHTTPHeaderFields = newValue }
-        }
-    }
-    
+    public var allHTTPHeaderFields: [String : String]?
+
     /// The value which corresponds to the given header
     /// field. Note that, in keeping with the HTTP RFC, HTTP header field
     /// names are case-insensitive.
     /// - parameter field: the header field name to use for the lookup (case-insensitive).
     public func value(forHTTPHeaderField field: String) -> String? {
-        return _handle.map { $0.value(forHTTPHeaderField: field) }
+        guard let f = allHTTPHeaderFields else { return nil }
+        return existingHeaderField(field, inHeaderFields: f)?.1
     }
     
     /// If a value was previously set for the given header
@@ -163,9 +127,14 @@ public struct URLRequest : ReferenceConvertible, Equatable, Hashable {
     /// keeping with the HTTP RFC, HTTP header field names are
     /// case-insensitive.
     public mutating func setValue(_ value: String?, forHTTPHeaderField field: String) {
-        _applyMutation {
-            $0.setValue(value, forHTTPHeaderField: field)
+        // Store the field name capitalized to match native Foundation
+        let capitalizedFieldName = field.capitalized
+        var f: [String : String] = allHTTPHeaderFields ?? [:]
+        if let old = existingHeaderField(capitalizedFieldName, inHeaderFields: f) {
+            f.removeValue(forKey: old.0)
         }
+        f[capitalizedFieldName] = value
+        allHTTPHeaderFields = f
     }
     
     /// This method provides a way to add values to header
@@ -176,22 +145,46 @@ public struct URLRequest : ReferenceConvertible, Equatable, Hashable {
     /// value by the caller. Note that, in keeping with the HTTP RFC, HTTP
     /// header field names are case-insensitive.
     public mutating func addValue(_ value: String, forHTTPHeaderField field: String) {
-        _applyMutation {
-            $0.addValue(value, forHTTPHeaderField: field)
+        let capitalizedFieldName = field.capitalized
+        var f: [String : String] = allHTTPHeaderFields ?? [:]
+        if let old = existingHeaderField(capitalizedFieldName, inHeaderFields: f) {
+            f[old.0] = old.1 + "," + value
+        } else {
+            f[capitalizedFieldName] = value
         }
+        allHTTPHeaderFields = f
     }
-    
+
+    internal enum Body {
+        case data(Data)
+        case stream(InputStream)
+    }
+    internal var _body: Body?
+
     /// This data is sent as the message body of the request, as
     /// in done in an HTTP POST request.
     public var httpBody: Data? {
         get {
-            return _handle.map { $0.httpBody }
+            if let body = _body {
+                switch body {
+                    case .data(let data):
+                        return data
+                    case .stream:
+                        return nil
+                }
+            }
+            return nil
         }
         set {
-            _applyMutation { $0.httpBody = newValue }
+            if let value = newValue {
+                _body = URLRequest.Body.data(value)
+            } else {
+                _body = nil
+            }
+
         }
     }
-    
+
     /// The stream is returned for examination only; it is
     /// not safe for the caller to manipulate the stream in any way.  Also
     /// note that the HTTPBodyStream and HTTPBody are mutually exclusive - only
@@ -200,51 +193,53 @@ public struct URLRequest : ReferenceConvertible, Equatable, Hashable {
     /// NSCoding protocol
     public var httpBodyStream: InputStream? {
         get {
-            return _handle.map { $0.httpBodyStream }
+            if let body = _body {
+                switch body {
+                    case .data:
+                        return nil
+                    case .stream(let stream):
+                        return stream
+                }
+            }
+            return nil
         }
         set {
-            _applyMutation { $0.httpBodyStream = newValue }
+            if let value = newValue {
+                _body = URLRequest.Body.stream(value)
+            } else {
+                _body = nil
+            }
         }
     }
-    
+
     /// `true` if cookies will be sent with and set for this request; otherwise `false`.
-    public var httpShouldHandleCookies: Bool {
-        get {
-            return _handle.map { $0.httpShouldHandleCookies }
-        }
-        set {
-            _applyMutation { $0.httpShouldHandleCookies = newValue }
-        }
-    }
-    
+    public var httpShouldHandleCookies: Bool = true
+
     /// `true` if the receiver should transmit before the previous response
     /// is received.  `false` if the receiver should wait for the previous response
     /// before transmitting.
-    public var httpShouldUsePipelining: Bool {
-        get {
-            return _handle.map { $0.httpShouldUsePipelining }
-        }
-        set {
-            _applyMutation { $0.httpShouldUsePipelining = newValue }
-        }
-    }
-    
+    public var httpShouldUsePipelining: Bool = true
+
     public func hash(into hasher: inout Hasher) {
-        hasher.combine(_handle.map { $0 })
+        hasher.combine(url)
+        hasher.combine(mainDocumentURL)
+        hasher.combine(httpMethod)
+        hasher.combine(httpBodyStream)
+        hasher.combine(allowsCellularAccess)
+        hasher.combine(httpShouldHandleCookies)
     }
     
     public static func ==(lhs: URLRequest, rhs: URLRequest) -> Bool {
-        return lhs._handle._uncopiedReference().isEqual(rhs._handle._uncopiedReference())
+        return (lhs.url == rhs.url
+                        && lhs.mainDocumentURL == rhs.mainDocumentURL
+                        && lhs.httpMethod == rhs.httpMethod
+                        && lhs.cachePolicy == rhs.cachePolicy
+                        && lhs.httpBodyStream == rhs.httpBodyStream
+                        && lhs.allowsCellularAccess == rhs.allowsCellularAccess
+                        && lhs.httpShouldHandleCookies == rhs.httpShouldHandleCookies)
     }
     
-    var protocolProperties: [String: Any] {
-        get {
-            return _handle.map { $0.protocolProperties }
-        }
-        set {
-            _applyMutation { $0.protocolProperties = newValue }
-        }
-    }
+    var protocolProperties: [String: Any] = [:]
 }
 
 extension URLRequest : CustomStringConvertible, CustomDebugStringConvertible, CustomReflectable {
@@ -285,7 +280,7 @@ extension URLRequest : _ObjectiveCBridgeable {
 
     @_semantics("convertToObjectiveC")
     public func _bridgeToObjectiveC() -> NSURLRequest {
-        return _handle._copiedReference()
+        return NSURLRequest(from: self)
     }
 
     public static func _forceBridgeFromObjectiveC(_ input: NSURLRequest, result: inout URLRequest?) {

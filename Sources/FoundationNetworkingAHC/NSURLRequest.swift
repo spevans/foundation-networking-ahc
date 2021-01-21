@@ -144,13 +144,27 @@ open class NSURLRequest : NSObject, NSSecureCoding, NSCopying, NSMutableCopying 
         self.mainDocumentURL = source.mainDocumentURL
         self.cachePolicy = source.cachePolicy
         self.timeoutInterval = source.timeoutInterval
-        self.httpMethod = source.httpMethod
+        self._httpMethod = source._httpMethod
         self.allHTTPHeaderFields = source.allHTTPHeaderFields
         self._body = source._body
         self.networkServiceType = source.networkServiceType
         self.allowsCellularAccess = source.allowsCellularAccess
         self.httpShouldHandleCookies = source.httpShouldHandleCookies
         self.httpShouldUsePipelining = source.httpShouldUsePipelining
+    }
+
+    internal init(from request: URLRequest) {
+        self.url = request.url
+        self.mainDocumentURL = request.mainDocumentURL
+        self.cachePolicy = request.cachePolicy
+        self.timeoutInterval = request.timeoutInterval
+        self._httpMethod = request._httpMethod
+        self.allHTTPHeaderFields = request.allHTTPHeaderFields
+        self._body = request._body
+        self.networkServiceType = request.networkServiceType
+        self.allowsCellularAccess = request.allowsCellularAccess
+        self.httpShouldHandleCookies = request.httpShouldHandleCookies
+        self.httpShouldUsePipelining = request.httpShouldUsePipelining
     }
     
     open override func mutableCopy() -> Any {
@@ -294,9 +308,9 @@ open class NSURLRequest : NSObject, NSSecureCoding, NSCopying, NSMutableCopying 
     internal var _httpMethod: String? = "GET"
 
     /// Returns the HTTP request method of the receiver.
-    open fileprivate(set) var httpMethod: String? {
+    open var httpMethod: String? {
         get { return _httpMethod }
-        set { _httpMethod = NSURLRequest._normalized(newValue) }
+        set { _httpMethod = Self._normalized(newValue) }
     }
 
     private class func _normalized(_ raw: String?) -> String {
@@ -331,11 +345,11 @@ open class NSURLRequest : NSObject, NSSecureCoding, NSCopying, NSMutableCopying 
         return existingHeaderField(field, inHeaderFields: f)?.1
     }
     
-    internal enum Body {
-        case data(Data)
-        case stream(InputStream)
-    }
-    internal var _body: Body?
+//    internal enum Body {
+//        case data(Data)
+//        case stream(InputStream)
+//    }
+    internal var _body: URLRequest.Body?
     
     open var httpBody: Data? {
         if let body = _body {
@@ -516,7 +530,7 @@ open class NSMutableURLRequest : NSURLRequest {
         }
         set {
             if let value = newValue {
-                _body = Body.data(value)
+                _body = URLRequest.Body.data(value)
             } else {
                 _body = nil
             }
@@ -537,7 +551,7 @@ open class NSMutableURLRequest : NSURLRequest {
         }
         set {
             if let value = newValue {
-                _body = Body.stream(value)
+                _body = URLRequest.Body.stream(value)
             } else {
                 _body = nil
             }
@@ -569,7 +583,7 @@ open class NSMutableURLRequest : NSURLRequest {
 }
 
 /// Returns an existing key-value pair inside the header fields if it exists.
-private func existingHeaderField(_ key: String, inHeaderFields fields: [String : String]) -> (String, String)? {
+internal func existingHeaderField(_ key: String, inHeaderFields fields: [String : String]) -> (String, String)? {
     for (k, v) in fields {
         if k.lowercased() == key.lowercased() {
             return (k, v)
