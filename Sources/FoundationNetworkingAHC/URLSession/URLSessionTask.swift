@@ -767,7 +767,7 @@ extension _ProtocolClient : URLProtocolClient {
         case .taskDelegate(let delegate as URLSessionDataDelegate):
             session.delegateQueue.addOperation {
                 delegate.urlSession(session, dataTask: dataTask, didReceive: response, completionHandler: { _ in
-                    URLSession.printDebug("warning: Ignoring disposition from completion handler.")
+                    NSLog("warning: Ignoring disposition from completion handler.")
                 })
             }
         case .noDelegate, .taskDelegate, .dataCompletionHandler, .downloadCompletionHandler:
@@ -827,7 +827,7 @@ extension _ProtocolClient : URLProtocolClient {
            let data = cacheableData,
            let response = cacheableResponse,
            let task = task as? URLSessionDataTask {
-            
+            #if false
             let cacheable = CachedURLResponse(response: response, data: Data(data.joined()), storagePolicy: cachePolicy)
             let protocolAllows = (urlProtocol as? _NativeProtocol)?.canCache(cacheable) ?? false
             if protocolAllows {
@@ -841,6 +841,7 @@ extension _ProtocolClient : URLProtocolClient {
                     cache.storeCachedResponse(cacheable, for: task)
                 }
             }
+            #endif
         }
         
         switch session.behaviour(for: task) {

@@ -9,8 +9,38 @@
 
 import Foundation
 import Dispatch
+import AsyncHTTPClient
 
-internal class _HTTPURLProtocol: _NativeProtocol {
+private let httpClient = HTTPClient(eventLoopGroupProvider: .createNew)
+
+internal class _HTTPURLProtocol: URLProtocol {
+
+    public required init(task: URLSessionTask, cachedResponse: CachedURLResponse?, client: URLProtocolClient?) {
+        super.init(request: task.originalRequest!, cachedResponse: cachedResponse, client: client)
+        self.task = task
+    }
+
+    public required init(request: URLRequest, cachedResponse: CachedURLResponse?, client: URLProtocolClient?) {
+        super.init(request: request, cachedResponse: cachedResponse, client: client)
+    }
+
+    override class func canInit(with request: URLRequest) -> Bool {
+        guard request.url?.scheme == "http" || request.url?.scheme == "https" else { return false }
+        return true
+    }
+
+    override class func canonicalRequest(for request: URLRequest) -> URLRequest {
+        return request
+    }
+
+    override func startLoading() {
+    }
+
+    override func stopLoading() {
+    }
+}
+
+/**
 
     // When processing redirects, the intermediate 3xx response bodies are normally discarded.
     // If the call to urlSession(_:task:willPerformHTTPRedirection:newRequest:completionHandler:)
@@ -261,6 +291,7 @@ internal class _HTTPURLProtocol: _NativeProtocol {
     /// Set options on the easy handle to match the given request.
     ///
     /// This performs a series of `curl_easy_setopt()` calls.
+    #if false
     override func configureEasyHandle(for request: URLRequest, body: _Body) {
         // At this point we will call the equivalent of curl_easy_setopt()
         // to configure everything on the handle. Since we might be re-using
@@ -420,6 +451,7 @@ internal class _HTTPURLProtocol: _NativeProtocol {
         // Always set the status as it may change if a HEAD is converted to a GET.
         easyHandle.set(noBody: request.httpMethod == "HEAD")
     }
+    #endif
 
     /// What action to take
     override func completionAction(forCompletedRequest request: URLRequest, response: URLResponse) -> _CompletionAction {
@@ -571,12 +603,12 @@ fileprivate var userAgentString: String = {
     // Darwin uses something like this: "xctest (unknown version) CFNetwork/760.4.2 Darwin/15.4.0 (x86_64)"
     let info = ProcessInfo.processInfo
     let name = info.processName
-    let curlVersion = CFURLSessionCurlVersionInfo()
+//    let curlVersion = CFURLSessionCurlVersionInfo()
     //TODO: Should probably use sysctl(3) to get these:
     // kern.ostype: Darwin
     // kern.osrelease: 15.4.0
     //TODO: Use Bundle to get the version number?
-    return "\(name) (unknown version) curl/\(curlVersion.major).\(curlVersion.minor).\(curlVersion.patch)"
+    return "\(name) (unknown version) curl/1.2.3"
 }()
 
 /// State Transfers
@@ -723,3 +755,4 @@ fileprivate extension HTTPURLResponse {
         return nil
     }
 }
+**/

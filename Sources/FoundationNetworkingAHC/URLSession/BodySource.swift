@@ -19,6 +19,7 @@
 import Foundation
 import Dispatch
 
+private let CFURLSessionMaxWriteSize = 4096
 
 /// Turn `Data` into `DispatchData`
 internal func createDispatchData(_ data: Data) -> DispatchData {

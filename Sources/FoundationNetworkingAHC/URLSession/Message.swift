@@ -18,7 +18,7 @@
 
 import Foundation
 
-extension _NativeProtocol {
+extension _HTTPURLProtocol {
     /// A native protocol like FTP or HTTP header being parsed.
     ///
     /// It can either be complete (i.e. the final CR LF CR LF has been
@@ -44,14 +44,14 @@ extension _NativeProtocol {
     }
 }
 
-extension _NativeProtocol._ParsedResponseHeader {
+extension _HTTPURLProtocol._ParsedResponseHeader {
     /// Parse a header line passed by libcurl.
     ///
     /// These contain the <CRLF> ending and the final line contains nothing but
     /// that ending.
     /// - Returns: Returning nil indicates failure. Otherwise returns a new
     ///     `ParsedResponseHeader` with the given line added.
-    func byAppending(headerLine data: Data, onHeaderCompleted: (String) -> Bool) -> _NativeProtocol._ParsedResponseHeader? {
+    func byAppending(headerLine data: Data, onHeaderCompleted: (String) -> Bool) -> _HTTPURLProtocol._ParsedResponseHeader? {
         // The buffer must end in CRLF
         guard 2 <= data.count &&
             data[data.endIndex - 2] == _Delimiters.CR &&
@@ -67,11 +67,11 @@ extension _NativeProtocol._ParsedResponseHeader {
     /// is a complete header. Otherwise it's a partial header.
     /// - Note: Appending a line to a complete header results in a partial
     ///     header with just that line.
-    private func _byAppending(headerLine line: String, onHeaderCompleted: (String) -> Bool) -> _NativeProtocol._ParsedResponseHeader {
+    private func _byAppending(headerLine line: String, onHeaderCompleted: (String) -> Bool) -> _HTTPURLProtocol._ParsedResponseHeader {
         if onHeaderCompleted(line) {
             switch self {
             case .partial(let header): return .complete(header)
-            case .complete: return .partial(_NativeProtocol._ResponseHeaderLines())
+            case .complete: return .partial(_HTTPURLProtocol._ResponseHeaderLines())
             }
         } else {
             let header = partialResponseHeader
@@ -79,20 +79,20 @@ extension _NativeProtocol._ParsedResponseHeader {
         }
     }
 
-    private var partialResponseHeader: _NativeProtocol._ResponseHeaderLines {
+    private var partialResponseHeader: _HTTPURLProtocol._ResponseHeaderLines {
         switch self {
         case .partial(let header): return header
-        case .complete: return _NativeProtocol._ResponseHeaderLines()
+        case .complete: return _HTTPURLProtocol._ResponseHeaderLines()
         }
     }
 }
 
-private extension _NativeProtocol._ResponseHeaderLines {
+private extension _HTTPURLProtocol._ResponseHeaderLines {
     /// Returns a copy of the lines with the new line appended to it.
-    func byAppending(headerLine line: String) -> _NativeProtocol._ResponseHeaderLines {
+    func byAppending(headerLine line: String) -> _HTTPURLProtocol._ResponseHeaderLines {
         var l = self.lines
         l.append(line)
-        return _NativeProtocol._ResponseHeaderLines(headerLines: l)
+        return _HTTPURLProtocol._ResponseHeaderLines(headerLines: l)
     }
 }
 
