@@ -28,7 +28,7 @@ internal func NSRequiresConcreteImplementation(_ fn: String = #function, file: S
     #endif
     fatalError("\(fn) must be overridden", file: file, line: line)
 }
-
+/*
 @usableFromInline
 class _NSNonfileURLContentLoader: _NSNonfileURLContentLoading {
     @usableFromInline
@@ -90,3 +90,4 @@ class _NSNonfileURLContentLoader: _NSNonfileURLContentLoading {
         throw cocoaError()
     }
 }
+*/
