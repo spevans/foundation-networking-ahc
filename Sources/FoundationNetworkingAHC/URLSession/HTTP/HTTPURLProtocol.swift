@@ -8,53 +8,22 @@
 //
 
 import Foundation
-import Dispatch
 import AsyncHTTPClient
 import NIOHTTP1
 import NIO
 import NIOFoundationCompat
 
 
-private let httpClient = HTTPClient(eventLoopGroupProvider: .createNew)
-
-private class HTTPClientDelegate: HTTPClientResponseDelegate {
-    typealias Response = Void
-    private weak var sessionTask: URLSessionTask?
-    private weak var sessionDelegate: URLSessionDelegate?
-    private var receivedBodyData = Data()
-
-    init(task: URLSessionTask?, sessionDelegate: URLSessionDelegate? = nil) {
-        self.sessionTask = task
-        self.sessionDelegate = sessionDelegate
-    }
-
-    func didReceiveBodyPart(task: HTTPClient.Task<Response>, _ buffer: ByteBuffer) -> EventLoopFuture<Void> {
-        // this is executed when we receive parts of the response body, could be called zero or more times
-
-        receivedBodyData += Data(buffer: buffer)
-
-        //count += buffer.readableBytes
-        // in case backpressure is needed, all reads will be paused until returned future is resolved
-        return task.eventLoop.makeSucceededFuture(())
-    }
-
-    func didFinishRequest(task: HTTPClient.Task<Void>) throws -> Void {
-
-        if let dataTask = sessionTask as? URLSessionDataTask,
-           let session = sessionTask?.session as? URLSession,
-           let urlSessionDelegate = sessionDelegate as? URLSessionDataDelegate {
-            urlSessionDelegate.urlSession(session, dataTask: dataTask, didReceive: receivedBodyData)
-        }
-    }
-}
+private let httpClient = HTTPClient(eventLoopGroupProvider: .createNew,
+                                    configuration: .init(decompression: .enabled(limit: .none)))
 
 
 internal class _HTTPURLProtocol: URLProtocol {
 
     private var httpClientRequest: HTTPClient.Request
-    private var httpClientDelegate: HTTPClientDelegate
     private var httpClientTask: HTTPClient.Task<Void>? = nil
 
+    // Convert a URLRequest to an AHC HTTPClient.Request
     private static func httpRequest(from request: URLRequest) -> HTTPClient.Request {
         let method: NIOHTTP1.HTTPMethod? = {
             switch request.httpMethod {
@@ -67,34 +36,57 @@ internal class _HTTPURLProtocol: URLProtocol {
             }
         }()
 
-        let _headers: [(String, String)] = (request.allHTTPHeaderFields ?? [:]).reduce(into: []) { target, value in
+        var _headers: [(String, String)] = (request.allHTTPHeaderFields ?? [:]).reduce(into: []) { target, value in
             target.append((value.key, value.value))
         }
 
-        let headers = NIOHTTP1.HTTPHeaders(_headers)
         let body: HTTPClient.Body?
         if let bodyData = request.httpBody {
             body = .data(bodyData)
         } else if let bodyStream = request.httpBodyStream {
-            fatalError("Cant handle a stream")
+            body = .stream { streamWriter in
+
+                let promise = httpClient.eventLoopGroup.next().makePromise(of: Void.self)
+                DispatchQueue(label: "stream-body").async {
+                    bodyStream.open()
+                    guard bodyStream.hasBytesAvailable else { return }
+                    let buffer = UnsafeMutablePointer<UInt8>.allocate(capacity: 1024)
+                    defer { buffer.deallocate() }
+
+                    while bodyStream.hasBytesAvailable {
+                        let count = bodyStream.read(buffer, maxLength: 1024)
+                        let bufferPointer = UnsafeMutableBufferPointer(start: buffer, count: count)
+                        _ = streamWriter.write(.byteBuffer(ByteBuffer(bytes: bufferPointer)))
+                    }
+                    streamWriter.write(.byteBuffer(ByteBuffer())).cascade(to: promise)
+                }
+                return promise.futureResult
+            }
         } else {
              body = nil
         }
+
+        if body != nil && (request.httpMethod == "POST") && (request.value(forHTTPHeaderField: "Content-Type") == nil) {
+            _headers.append(("Content-Type", "application/x-www-form-urlencoded"))
+        }
+
+        let headers = NIOHTTP1.HTTPHeaders(_headers)
 
         return try! HTTPClient.Request(url: request.url!, method: method!, headers: headers, body: body)
     }
 
     public required init(task: URLSessionTask, cachedResponse: CachedURLResponse?, client: URLProtocolClient?) {
         self.httpClientRequest = _HTTPURLProtocol.httpRequest(from: task.originalRequest!)
-        self.httpClientDelegate = HTTPClientDelegate(task: task, sessionDelegate: task.session.delegate)
+
+
         super.init(request: task.originalRequest!, cachedResponse: cachedResponse, client: client)
         self.task = task
     }
 
     public required init(request: URLRequest, cachedResponse: CachedURLResponse?, client: URLProtocolClient?) {
-        self.httpClientRequest = _HTTPURLProtocol.httpRequest(from: request)
-        self.httpClientDelegate = HTTPClientDelegate(task: nil, sessionDelegate: nil)
-        super.init(request: request, cachedResponse: cachedResponse, client: client)
+        fatalError("TODO")
+//        self.httpClientRequest = _HTTPURLProtocol.httpRequest(from: request)
+//        super.init(request: request, cachedResponse: cachedResponse, client: client)
     }
 
     override class func canInit(with request: URLRequest) -> Bool {
@@ -109,9 +101,22 @@ internal class _HTTPURLProtocol: URLProtocol {
     override func startLoading() {
         let timeout = Int64(task?.originalRequest?.timeoutInterval ?? 30)
         let deadline = NIO.NIODeadline.now() + .seconds(timeout)
-        let task = httpClient.execute(request: self.httpClientRequest,
-                                       delegate: self.httpClientDelegate,
-                                       deadline: deadline)
+        guard let task = self.task else { return }
+
+        switch task.delegateBehaviour {
+            case .callDelegate:
+                self.httpClientTask = httpClient.execute(request: self.httpClientRequest,
+                                                         delegate: _HTTPClientDelegate(task: task),
+                                                         deadline: deadline)
+
+            case .dataCompletionHandler(let handler):
+                self.httpClientTask = httpClient.execute(request: self.httpClientRequest,
+                                                         delegate: _HTTPClientCompletionDelegate(task: task, handler: handler),
+                                                         deadline: deadline)
+
+            case .downloadCompletionHandler(let handler):
+                fatalError()
+        }
     }
 
     override func stopLoading() {

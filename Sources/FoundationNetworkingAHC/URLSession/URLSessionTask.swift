@@ -24,7 +24,9 @@ private class Bag<Element> {
 /// A cancelable object that refers to the lifetime
 /// of processing a given request.
 open class URLSessionTask : NSObject, NSCopying {
-    
+
+    internal let delegateBehaviour: URLSession._TaskRegistry._Behaviour
+
     // These properties aren't heeded in swift-corelibs-foundation, but we may heed them in the future. They exist for source compatibility.
     open var countOfBytesClientExpectsToReceive: Int64 = NSURLSessionTransferSizeUnknown {
         didSet { updateProgress() }
@@ -231,26 +233,29 @@ open class URLSessionTask : NSObject, NSCopying {
         originalRequest = nil
         knownBody = URLSessionTask._Body.none
         workQueue = DispatchQueue(label: "URLSessionTask.notused.0")
+        self.delegateBehaviour = .callDelegate
         super.init()
     }
+
     /// Create a data task. If there is a httpBody in the URLRequest, use that as a parameter
-    internal convenience init(session: URLSession, request: URLRequest, taskIdentifier: Int) {
+    internal convenience init(session: URLSession, request: URLRequest, taskIdentifier: Int, delegateBehaviour: URLSession._TaskRegistry._Behaviour) {
         if let bodyData = request.httpBody, !bodyData.isEmpty {
-            self.init(session: session, request: request, taskIdentifier: taskIdentifier, body: _Body.data(createDispatchData(bodyData)))
+            self.init(session: session, request: request, taskIdentifier: taskIdentifier, delegateBehaviour: delegateBehaviour, body: _Body.data(createDispatchData(bodyData)))
         } else if let bodyStream = request.httpBodyStream {
-            self.init(session: session, request: request, taskIdentifier: taskIdentifier, body: _Body.stream(bodyStream))
+            self.init(session: session, request: request, taskIdentifier: taskIdentifier, delegateBehaviour: delegateBehaviour, body: _Body.stream(bodyStream))
         } else {
-            self.init(session: session, request: request, taskIdentifier: taskIdentifier, body: _Body.none)
+            self.init(session: session, request: request, taskIdentifier: taskIdentifier, delegateBehaviour: delegateBehaviour, body: _Body.none)
         }
     }
 
-    internal init(session: URLSession, request: URLRequest, taskIdentifier: Int, body: _Body?) {
+    internal init(session: URLSession, request: URLRequest, taskIdentifier: Int, delegateBehaviour: URLSession._TaskRegistry._Behaviour, body: _Body?) {
         self.session = session
         /* make sure we're actually having a serial queue as it's used for synchronization */
         self.workQueue = DispatchQueue.init(label: "org.swift.URLSessionTask.WorkQueue", target: session.workQueue)
         self.taskIdentifier = taskIdentifier
         self.originalRequest = request
         self.knownBody = body
+        self.delegateBehaviour = delegateBehaviour
         super.init()
         self.currentRequest = request
         self.progress.cancellationHandler = { [weak self] in

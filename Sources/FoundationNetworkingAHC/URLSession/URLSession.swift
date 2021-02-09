@@ -548,7 +548,7 @@ fileprivate extension URLSession {
         guard !self.invalidated else { fatalError("Session invalidated") }
         let r = createConfiguredRequest(from: request)
         let i = createNextTaskIdentifier()
-        let task = URLSessionDataTask(session: self, request: r, taskIdentifier: i)
+        let task = URLSessionDataTask(session: self, request: r, taskIdentifier: i, delegateBehaviour: behaviour)
         workQueue.async {
             self.taskRegistry.add(task, behaviour: behaviour)
         }
@@ -562,7 +562,7 @@ fileprivate extension URLSession {
         guard !self.invalidated else { fatalError("Session invalidated") }
         let r = createConfiguredRequest(from: request)
         let i = createNextTaskIdentifier()
-        let task = URLSessionUploadTask(session: self, request: r, taskIdentifier: i, body: body)
+        let task = URLSessionUploadTask(session: self, request: r, taskIdentifier: i, delegateBehaviour: behaviour, body: body)
         workQueue.async {
             self.taskRegistry.add(task, behaviour: behaviour)
         }
@@ -574,7 +574,7 @@ fileprivate extension URLSession {
         guard !self.invalidated else { fatalError("Session invalidated") }
         let r = createConfiguredRequest(from: request)
         let i = createNextTaskIdentifier()
-        let task = URLSessionDownloadTask(session: self, request: r, taskIdentifier: i)
+        let task = URLSessionDownloadTask(session: self, request: r, taskIdentifier: i, delegateBehaviour: behavior)
         workQueue.async {
             self.taskRegistry.add(task, behaviour: behavior)
         }
