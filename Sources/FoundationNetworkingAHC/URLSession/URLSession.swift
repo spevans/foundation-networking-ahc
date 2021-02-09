@@ -184,7 +184,6 @@ public let NSURLSessionTransferSizeUnknown: Int64 = -1
 
 open class URLSession : NSObject {
     internal let _configuration: _Configuration
-    fileprivate let multiHandle: _MultiHandle
     fileprivate var nextTaskIdentifier = 1
     internal let workQueue: DispatchQueue 
     internal let taskRegistry = URLSession._TaskRegistry()
@@ -230,7 +229,6 @@ open class URLSession : NSObject {
         self.configuration = configuration.copy() as! URLSessionConfiguration
         let c = URLSession._Configuration(URLSessionConfiguration: configuration)
         self._configuration = c
-        self.multiHandle = _MultiHandle(configuration: c, workQueue: workQueue)
         // registering all the protocol classes with URLProtocol
         let _ = URLSession.registerProtocols
     }
@@ -255,7 +253,6 @@ open class URLSession : NSObject {
         self.configuration = configuration.copy() as! URLSessionConfiguration
         let c = URLSession._Configuration(URLSessionConfiguration: configuration)
         self._configuration = c
-        self.multiHandle = _MultiHandle(configuration: c, workQueue: workQueue)
         // registering all the protocol classes with URLProtocol
         let _ = URLSession.registerProtocols
     }
@@ -633,18 +630,18 @@ internal extension URLSession {
 
 
 internal protocol URLSessionProtocol: AnyObject {
-    func add(handle: _EasyHandle)
-    func remove(handle: _EasyHandle)
+    func add(handle: Any)
+    func remove(handle: Any)
     func behaviour(for: URLSessionTask) -> URLSession._TaskBehaviour
     var configuration: URLSessionConfiguration { get }
     var delegate: URLSessionDelegate? { get }
 }
 extension URLSession: URLSessionProtocol {
-    func add(handle: _EasyHandle) {
-        multiHandle.add(handle)
+    func add(handle: Any) {
+        fatalError()
     }
-    func remove(handle: _EasyHandle) {
-        multiHandle.remove(handle)
+    func remove(handle: Any) {
+        fatalError()
     }
 }
 /// This class is only used to allow `URLSessionTask.init()` to work.
@@ -657,10 +654,10 @@ final internal class _MissingURLSession: URLSessionProtocol {
     var configuration: URLSessionConfiguration {
         fatalError()
     }
-    func add(handle: _EasyHandle) {
+    func add(handle: Any) {
         fatalError()
     }
-    func remove(handle: _EasyHandle) {
+    func remove(handle: Any) {
         fatalError()
     }
     func behaviour(for: URLSessionTask) -> URLSession._TaskBehaviour {
