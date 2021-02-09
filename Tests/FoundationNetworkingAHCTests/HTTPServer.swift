@@ -49,19 +49,10 @@
 import Dispatch
 import XCTest
 import Foundation
+import NIO
+import NIOHTTP1
+import NIOFoundationCompat
 
-#if canImport(CRT)
-    import CRT
-    import WinSDK
-#elseif canImport(Darwin)
-    import Darwin
-#elseif canImport(Glibc)
-    import Glibc
-#endif
-
-#if !os(Windows)
-typealias SOCKET = Int32
-#endif
 
 private let serverDebug = (ProcessInfo.processInfo.environment["SCLF_HTTP_SERVER_DEBUG"] == "YES")
 
@@ -75,345 +66,248 @@ public let globalDispatchQueue = DispatchQueue.global()
 public let dispatchQueueMake: (String) -> DispatchQueue = { DispatchQueue.init(label: $0) }
 public let dispatchGroupMake: () -> DispatchGroup = DispatchGroup.init
 
-struct _HTTPUtils {
-    static let CRLF = "\r\n"
-    static let VERSION = "HTTP/1.1"
-    static let SPACE = " "
-    static let CRLF2 = CRLF + CRLF
-    static let EMPTY = ""
-}
 
-extension UInt16 {
-    public init(networkByteOrder input: UInt16) {
-        self.init(bigEndian: input)
+
+struct _HTTPRequest: CustomStringConvertible {
+    enum Method : String {
+        case HEAD
+        case GET
+        case POST
+        case PUT
+        case DELETE
+    }
+
+    enum Error: Swift.Error {
+        case invalidURI
+        case invalidMethod
+        case headerEndNotFound
+    }
+
+    let method: Method
+    let uri: String
+    private(set) var headers: [String] = []
+    private(set) var parameters: [String: String] = [:]
+    var messageBody: String?
+    var messageData: Data?
+    var description: String { return "\(method) \(uri)" }
+
+
+    public init(reqHead: HTTPRequestHead) throws {
+        self.headers.append("\(reqHead.method.rawValue) \(reqHead.uri) \(reqHead.version.description)")
+        for header in reqHead.headers {
+            self.headers.append("\(header.name): \(header.value)")
+        }
+
+        switch reqHead.method {
+            case .GET: method = Method.GET
+            case .PUT: method = Method.PUT
+            case .HEAD: method = Method.HEAD
+            case .POST: method = Method.POST
+            case .DELETE: method = Method.DELETE
+
+            default: throw Error.invalidMethod
+        }
+
+        let params = reqHead.uri.split(separator: "?", maxSplits: 1, omittingEmptySubsequences: true)
+        if params.count > 1 {
+            for arg in params[1].split(separator: "&", omittingEmptySubsequences: true) {
+                let keyValue = arg.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
+                guard !keyValue.isEmpty else { continue }
+                guard let key = keyValue[0].removingPercentEncoding else {
+                    throw Error.invalidURI
+                }
+                guard let value = (keyValue.count > 1) ? keyValue[1].removingPercentEncoding : "" else {
+                    throw Error.invalidURI
+                }
+                self.parameters[key] = value
+            }
+        }
+
+        self.uri = String(params[0])
+    }
+
+    public func getCommaSeparatedHeaders() -> String {
+        var allHeaders = ""
+        for header in headers {
+            allHeaders += header + ","
+        }
+        return allHeaders
+    }
+
+    public func getHeader(for key: String) -> String? {
+        let lookup = key.lowercased()
+        for header in headers {
+            let parts = header.components(separatedBy: ":")
+            if parts[0].lowercased() == lookup {
+                return parts[1].trimmingCharacters(in: CharacterSet(charactersIn: " "))
+            }
+        }
+        return nil
+    }
+
+    public func headersAsJSON() throws -> Data {
+        var headerDict: [String: String] = [:]
+        for header in headers {
+            if header.hasPrefix(method.rawValue) {
+                headerDict["uri"] = header
+                continue
+            }
+            let parts = header.components(separatedBy: ":")
+            if parts.count > 1 {
+                headerDict[parts[0]] = parts[1].trimmingCharacters(in: CharacterSet(charactersIn: " "))
+            }
+        }
+
+        // Include the body as a Base64 Encoded entry
+        if let bodyData = messageData ?? messageBody?.data(using: .utf8) {
+            headerDict["x-base64-body"] = bodyData.base64EncodedString()
+        }
+        return try JSONSerialization.data(withJSONObject: headerDict, options: .sortedKeys)
     }
 }
 
-// _TCPSocket wraps one socket that is used either to listen()/accept() new connections, or for the client connection itself.
-class _TCPSocket: CustomStringConvertible {
-#if !os(Windows)
-    #if os(Linux) || os(Android) || os(FreeBSD)
-    private let sendFlags = CInt(MSG_NOSIGNAL)
-#else
-    private let sendFlags = CInt(0)
-    #endif
-#endif
 
+struct _HTTPResponse: CustomStringConvertible {
+    enum Response: Int {
+        case OK = 200
+        case FOUND = 302
+        case BAD_REQUEST = 400
+        case NOT_FOUND = 404
+        case METHOD_NOT_ALLOWED = 405
+        case SERVER_ERROR = 500
+
+        func asNIO() -> HTTPResponseStatus {
+            switch self {
+                case .OK: return .ok
+                case .FOUND: return .found
+                case .BAD_REQUEST: return .badRequest
+                case .NOT_FOUND: return .notFound
+                case .METHOD_NOT_ALLOWED: return .methodNotAllowed
+                case .SERVER_ERROR: return .internalServerError
+            }
+        }
+    }
+
+    let response: HTTPResponseStatus
+    private(set) var headers: [String]
+    public let bodyData: Data
     var description: String {
-        return "_TCPSocket @ 0x" + String(unsafeBitCast(self, to: UInt.self), radix: 16)
+        let _h = headers.joined(separator: "\n")
+        return "\(response.code) \(_h)"
     }
 
-    let listening: Bool
-    private var _socket: SOCKET!
-    private var socketAddress = UnsafeMutablePointer<sockaddr_in>.allocate(capacity: 1)
-    public private(set) var port: UInt16
+    public init(response: Response, headers: [String] = [], bodyData: Data) {
+        self.response = HTTPResponseStatus(statusCode: response.rawValue)
+        self.headers = headers
+        self.bodyData = bodyData
 
-    private func isNotNegative(r: CInt) -> Bool {
-        return r != -1
-    }
-
-    private func isZero(r: CInt) -> Bool {
-        return r == 0
-    }
-
-    private func attempt<T>(_ name: String, file: String = #file, line: UInt = #line, valid: (T) -> Bool,  _ b: @autoclosure () -> T) throws -> T {
-        let r = b()
-        guard valid(r) else {
-            throw ServerError(operation: name, errno: errno, file: file, line: line)
-        }
-        return r
-    }
-
-
-    init(socket: SOCKET) {
-        _socket = socket
-        self.port = 0
-        listening = false
-    }
-
-    init(port: UInt16?) throws {
-        listening = true
-        self.port = 0
-
-#if os(Windows)
-        _socket = try attempt("WSASocketW", valid: { $0 != INVALID_SOCKET }, WSASocketW(AF_INET, SOCK_STREAM, IPPROTO_TCP.rawValue, nil, 0, DWORD(WSA_FLAG_OVERLAPPED)))
-
-        var value: Int8 = 1
-        _ = try attempt("setsockopt", valid: { $0 == 0 }, setsockopt(_socket, SOL_SOCKET, SO_REUSEADDR, &value, Int32(MemoryLayout.size(ofValue: value))))
-#else
-#if os(Linux) && !os(Android)
-        let SOCKSTREAM = Int32(SOCK_STREAM.rawValue)
-#else
-        let SOCKSTREAM = SOCK_STREAM
-#endif
-        _socket = try attempt("socket", valid: { $0 >= 0 }, socket(AF_INET, SOCKSTREAM, Int32(IPPROTO_TCP)))
-        var on: CInt = 1
-        _ = try attempt("setsockopt", valid: { $0 == 0 }, setsockopt(_socket, SOL_SOCKET, SO_REUSEADDR, &on, socklen_t(MemoryLayout<CInt>.size)))
-#endif
-
-        let sa = createSockaddr(port)
-        socketAddress.initialize(to: sa)
-        try socketAddress.withMemoryRebound(to: sockaddr.self, capacity: MemoryLayout<sockaddr>.size, { 
-            let addr = UnsafePointer<sockaddr>($0)
-            _ = try attempt("bind", valid: isZero, bind(_socket, addr, socklen_t(MemoryLayout<sockaddr>.size)))
-            _ = try attempt("listen", valid: isZero, listen(_socket, SOMAXCONN))
-        })
-
-        var actualSA = sockaddr_in()
-        withUnsafeMutablePointer(to: &actualSA) { ptr in
-            ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { (ptr: UnsafeMutablePointer<sockaddr>) in
-                var len = socklen_t(MemoryLayout<sockaddr>.size)
-                getsockname(_socket, ptr, &len)
+        for header in headers {
+            if header.lowercased().hasPrefix("content-length") {
+                return
             }
         }
-
-        self.port = UInt16(networkByteOrder: actualSA.sin_port)
+        self.headers.append("Content-Length: \(bodyData.count)")
     }
 
-    private func createSockaddr(_ port: UInt16?) -> sockaddr_in {
-        // Listen on the loopback address so that OSX doesnt pop up a dialog
-        // asking to accept incoming connections if the firewall is enabled.
-        let addr = UInt32(INADDR_LOOPBACK).bigEndian
-        let netPort = UInt16(bigEndian: port ?? 0)
-        #if os(Android)
-            return sockaddr_in(sin_family: sa_family_t(AF_INET), sin_port: netPort, sin_addr: in_addr(s_addr: addr), __pad: (0,0,0,0,0,0,0,0))
-        #elseif os(Linux)
-            return sockaddr_in(sin_family: sa_family_t(AF_INET), sin_port: netPort, sin_addr: in_addr(s_addr: addr), sin_zero: (0,0,0,0,0,0,0,0))
-        #elseif os(Windows)
-            return sockaddr_in(sin_family: ADDRESS_FAMILY(AF_INET), sin_port: USHORT(netPort), sin_addr: IN_ADDR(S_un: in_addr.__Unnamed_union_S_un(S_addr: addr)), sin_zero: (CHAR(0), CHAR(0), CHAR(0), CHAR(0), CHAR(0), CHAR(0), CHAR(0), CHAR(0)))
-        #else
-            return sockaddr_in(sin_len: 0, sin_family: sa_family_t(AF_INET), sin_port: netPort, sin_addr: in_addr(s_addr: addr), sin_zero: (0,0,0,0,0,0,0,0))
-        #endif
-    }
-
-    func acceptConnection() throws -> _TCPSocket {
-        guard listening else { fatalError("Trying to listen on a client connection socket") }
-        let connection: SOCKET = try socketAddress.withMemoryRebound(to: sockaddr.self, capacity: MemoryLayout<sockaddr>.size, {
-            let addr = UnsafeMutablePointer<sockaddr>($0)
-            var sockLen = socklen_t(MemoryLayout<sockaddr>.size) 
-#if os(Windows)
-            let connectionSocket = try attempt("WSAAccept", valid: { $0 != INVALID_SOCKET }, WSAAccept(_socket, addr, &sockLen, nil, 0))
-#else
-            let connectionSocket = try attempt("accept", valid: { $0 >= 0 }, accept(_socket, addr, &sockLen))
-#endif
-#if canImport(Darwin)
-            // Disable SIGPIPEs when writing to closed sockets
-            var on: CInt = 1
-            guard setsockopt(connectionSocket, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<CInt>.size)) == 0 else {
-                close(connectionSocket)
-                throw ServerError.init(operation: "setsockopt", errno: errno, file: #file, line: #line)
+    public init(responseCode: Int, headers: [String] = [], bodyData: Data = Data()) {
+        self.response = HTTPResponseStatus(statusCode: responseCode)
+        self.headers = headers
+        self.bodyData = bodyData
+        for header in headers {
+            if header.lowercased().hasPrefix("content-length") {
+                return
             }
-#endif
-            debugLog("\(self) acceptConnection: accepted: \(connectionSocket)")
-            return connectionSocket
-        })
-        return _TCPSocket(socket: connection)
-    }
- 
-    func readData() throws -> Data? {
-        guard let connectionSocket = _socket else {
-            throw InternalServerError.socketAlreadyClosed
         }
-
-        var buffer = [CChar](repeating: 0, count: 4096)
-#if os(Windows)
-        var dwNumberOfBytesRecieved: DWORD = 0;
-        try buffer.withUnsafeMutableBufferPointer {
-            var wsaBuffer: WSABUF = WSABUF(len: ULONG($0.count), buf: $0.baseAddress)
-            var flags: DWORD = 0
-            _ = try attempt("WSARecv", valid: { $0 != SOCKET_ERROR }, WSARecv(connectionSocket, &wsaBuffer, 1, &dwNumberOfBytesRecieved, &flags, nil, nil))
-        }
-        let length = Int(dwNumberOfBytesRecieved)
-#else
-        let length = try attempt("read", valid: { $0 >= 0 }, read(connectionSocket, &buffer, buffer.count))
-#endif
-        guard length > 0 else { return nil }
-        return Data(bytes: buffer, count: length)
+        self.headers.append("Content-Length: \(bodyData.count)")
     }
 
-    func writeRawData(_ data: Data) throws {
-        guard let connectionSocket = _socket else {
-            throw InternalServerError.socketAlreadyClosed
-        }
-#if os(Windows)
-        _ = try data.withUnsafeBytes {
-            var dwNumberOfBytesSent: DWORD = 0
-            var wsaBuffer: WSABUF = WSABUF(len: ULONG(data.count), buf: UnsafeMutablePointer<CHAR>(mutating: $0.bindMemory(to: CHAR.self).baseAddress))
-            _ = try attempt("WSASend", valid: { $0 != SOCKET_ERROR }, WSASend(connectionSocket, &wsaBuffer, 1, &dwNumberOfBytesSent, 0, nil, nil))
-        }
-#else
-        _ = try data.withUnsafeBytes { ptr in
-            try attempt("send", valid: { $0 == data.count }, CInt(send(connectionSocket, ptr.baseAddress!, data.count, sendFlags)))
-        }
-#endif
-        debugLog("wrote \(data.count) bytes")
+    public init(response: Response, headers: String, bodyData: Data) {
+        let headers = headers.split(separator: "\r\n").map { String($0) }
+        self.init(response: response, headers: headers, bodyData: bodyData)
     }
 
-    func writeData(header: String, bodyData: Data) throws {
-        var totalData = Data(header.utf8)
-        totalData.append(bodyData)
-        try writeRawData(totalData)
+    public init(response: Response, body: String) throws {
+        guard let data = body.data(using: .utf8) else {
+            throw InternalServerError.badBody
+        }
+        self.init(response: response, bodyData: data)
     }
 
-    func closeSocket() throws {
-        guard _socket != nil else { return }
-#if os(Windows)
-        if listening { shutdown(_socket, SD_BOTH) }
-        closesocket(_socket)
-#else
-        if listening { shutdown(_socket, CInt(SHUT_RDWR)) }
-        close(_socket)
-#endif
-        _socket = nil
+    public init(response: Response, headers: [String] = [], body: String = "") throws {
+        guard let data = body.data(using: .utf8) else {
+            throw InternalServerError.badBody
+        }
+        self.init(response: response, headers: headers, bodyData: data)
     }
 
-    deinit {
-        debugLog("\(self) closing socket")
-        try? closeSocket()
+    public var header: String {
+        let responseCodeName = HTTPURLResponse.localizedString(forStatusCode: Int(response.code))
+        let statusLine = "HTTP/1.1 \(response.code) \(responseCodeName)"
+        let header = headers.joined(separator: "\r\n")
+        return statusLine + (header != "" ? "\r\n\(header)" : "") + "\r\n\r\n"
+    }
+
+    mutating func addHeader(_ header: String) {
+        headers.append(header)
     }
 }
 
+internal final class TestURLSessionServer: ChannelInboundHandler {
+    typealias InboundIn = HTTPServerRequestPart
 
-class _HTTPServer: CustomStringConvertible {
+    var request: _HTTPRequest!
 
-    var description: String {
-        return "_HTTPServer @ 0x" + String(unsafeBitCast(self, to: UInt.self), radix: 16)
-    }
+    func channelRead(context: ChannelHandlerContext, data: NIOAny) {
+        let reqPart = unwrapInboundIn(data)
 
-    // Provide Data() blocks from the socket either separated by a given separator or of a requested block size.
-    struct _SocketDataReader {
-        private let tcpSocket: _TCPSocket
-        private var buffer = Data()
+        switch reqPart {
+            case .head(let header):
+                print(header.uri)
+                request = try! _HTTPRequest(reqHead: header)
 
-        init(socket: _TCPSocket) {
-            tcpSocket = socket
-        }
-
-        mutating func readBlockSeparated(by separatorData: Data) throws -> Data {
-            var range = buffer.range(of: separatorData)
-            while range == nil {
-                guard let data = try tcpSocket.readData() else { break }
-                debugLog("read \(data.count) bytes")
-                buffer.append(data)
-                range = buffer.range(of: separatorData)
-            }
-            guard let r = range else { throw InternalServerError.requestTooShort }
-
-            let result = buffer.prefix(upTo: r.lowerBound)
-            buffer = buffer.suffix(from: r.upperBound)
-            return result
-        }
-
-        mutating func readBytes(count: Int) throws -> Data {
-            while buffer.count < count {
-                guard let data = try tcpSocket.readData() else { break }
-                debugLog("read \(data.count) bytes")
-                buffer.append(data)
-            }
-            guard buffer.count >= count else {
-                throw InternalServerError.requestTooShort
-            }
-            let endIndex = buffer.startIndex + count
-            let result = buffer[buffer.startIndex..<endIndex]
-            buffer = buffer[endIndex...]
-            return result
-        }
-    }
-
-    deinit {
-        debugLog("_HTTPServer \(self) stopping")
-    }
-
-    let tcpSocket: _TCPSocket
-    var port: UInt16 { tcpSocket.port }
-
-    init(port: UInt16?) throws {
-        tcpSocket = try _TCPSocket(port: port)
-    }
-
-    init(socket: _TCPSocket) {
-        tcpSocket = socket
-    }
-
-    public class func create(port: UInt16?) throws -> _HTTPServer {
-        return try _HTTPServer(port: port)
-    }
-
-    public func listen() throws -> _HTTPServer {
-        let connection = try tcpSocket.acceptConnection()
-        debugLog("\(self) accepted: \(connection)")
-        return _HTTPServer(socket: connection)
-    }
-
-    public func stop() throws {
-        try tcpSocket.closeSocket()
-    }
-    
-    public func request() throws -> _HTTPRequest {
-
-        var reader = _SocketDataReader(socket: tcpSocket)
-        let headerData = try reader.readBlockSeparated(by: _HTTPUtils.CRLF2.data(using: .ascii)!)
-
-        guard let headerString = String(bytes: headerData, encoding: .ascii) else {
-            throw InternalServerError.requestTooShort
-        }
-        var request = try _HTTPRequest(header: headerString)
-
-        if let contentLength = request.getHeader(for: "Content-Length"), let length = Int(contentLength), length > 0 {
-            let messageData = try reader.readBytes(count: length)
-            request.messageData = messageData
-            request.messageBody = String(bytes: messageData, encoding: .utf8)
-            return request
-        }
-        else if(request.getHeader(for: "Transfer-Encoding") ?? "").lowercased() == "chunked" {
-            // According to RFC7230 https://tools.ietf.org/html/rfc7230#section-3
-            // We receive messageBody after the headers, so we need read from socket minimum 2 times
-            //
-            // HTTP-message structure
-            //
-            // start-line
-            // *( header-field CRLF )
-            // CRLF
-            // [ message-body ]
-            // We receives '{numofbytes}\r\n{data}\r\n'
-
-            // There maybe some part of the body in the initial data
-
-            let bodySeparator = _HTTPUtils.CRLF.data(using: .ascii)!
-            var messageData = Data()
-            var finished = false
-
-            while !finished {
-                let chunkSizeData = try reader.readBlockSeparated(by: bodySeparator)
-                // Should now have <num bytes>\r\n
-                guard let number = String(bytes: chunkSizeData, encoding: .ascii), let chunkSize = Int(number, radix: 16) else {
-                     throw InternalServerError.requestTooShort
-                }
-                if chunkSize == 0 {
-                    finished = true
-                    break
+            case .body(var buffer):
+                if let data = buffer.readData(length: buffer.readableBytes) {
+                    if request.messageData == nil {
+                        request.messageData = data
+                    } else {
+                        request.messageData?.append(data)
+                    }
                 }
 
-                let chunkData = try reader.readBytes(count: chunkSize)
-                messageData.append(chunkData)
+            case .end:
+                let response = try! getResponse(request: request)
+                let channel = context.channel
 
-                // Next 2 bytes should be \r\n to indicate the end of the chunk
-                let endOfChunk = try reader.readBytes(count: bodySeparator.count)
-                guard endOfChunk == bodySeparator else {
-                    throw InternalServerError.requestTooShort
+                let headers: [(String, String)] = response.headers.reduce(into: []) { target, header in
+                    let parts = header.split(separator: ":", maxSplits: 1, omittingEmptySubsequences: false)
+                    target.append((parts[0].trimmingCharacters(in: CharacterSet.whitespaces), parts[1].trimmingCharacters(in: CharacterSet.whitespaces)))
                 }
-            }
-            request.messageData = messageData
-            request.messageBody = String(bytes: messageData, encoding: .utf8)
+
+                let head = HTTPResponseHead(version: .init(major: 1, minor: 1), // header.version,
+                                            status: response.response,
+                                            headers: HTTPHeaders(headers))
+                _ = channel.write(HTTPServerResponsePart.head(head))
+
+                let buffer = channel.allocator.buffer(data: response.bodyData)
+                _ = channel.write(HTTPServerResponsePart.body(.byteBuffer(buffer)))
+
+                let endpart = HTTPServerResponsePart.end(nil)
+                _ = channel.writeAndFlush(endpart).flatMap {
+                    channel.close()
+                }
         }
-
-        return request
     }
 
-    public func respond(with response: _HTTPResponse) throws {
-        try tcpSocket.writeData(header: response.header, bodyData: response.bodyData)
-    }
+    let capitals: [String:String] = ["Nepal": "Kathmandu",
+                                     "Peru": "Lima",
+                                     "Italy": "Rome",
+                                     "USA": "Washington, D.C.",
+                                     "UnitedStates": "USA",
+                                     "UnitedKingdom": "UK",
+                                     "UK": "London",
+                                     "country.txt": "A country is a region that is identified as a distinct national entity in political geography"]
 
+    #if false // FIXME
     func respondWithBrokenResponses(uri: String) throws {
         let responseData: Data
         switch uri {
@@ -511,185 +405,6 @@ class _HTTPServer: CustomStringConvertible {
                 "\r\n").data(using: .utf8)!
         try tcpSocket.writeRawData(responseData)
     }
-}
-
-struct _HTTPRequest: CustomStringConvertible {
-    enum Method : String {
-        case HEAD
-        case GET
-        case POST
-        case PUT
-        case DELETE
-    }
-
-    enum Error: Swift.Error {
-        case invalidURI
-        case invalidMethod
-        case headerEndNotFound
-    }
-
-    let method: Method
-    let uri: String
-    private(set) var headers: [String] = []
-    private(set) var parameters: [String: String] = [:]
-    var messageBody: String?
-    var messageData: Data?
-    var description: String {
-        return "\(method.rawValue) \(uri)"
-    }
-
-
-    public init(header: String) throws {
-        self.headers = header.components(separatedBy: _HTTPUtils.CRLF)
-        guard headers.count > 0 else {
-            throw Error.invalidURI
-        }
-        let uriParts = headers[0].components(separatedBy: " ")
-        guard uriParts.count > 2, let methodName = Method(rawValue: uriParts[0]) else {
-            throw Error.invalidMethod
-        }
-        method = methodName
-        let params = uriParts[1].split(separator: "?", maxSplits: 1, omittingEmptySubsequences: true)
-        if params.count > 1 {
-            for arg in params[1].split(separator: "&", omittingEmptySubsequences: true) {
-                let keyValue = arg.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
-                guard !keyValue.isEmpty else { continue }
-                guard let key = keyValue[0].removingPercentEncoding else {
-                    throw Error.invalidURI
-                }
-                guard let value = (keyValue.count > 1) ? keyValue[1].removingPercentEncoding : "" else {
-                    throw Error.invalidURI
-                }
-                self.parameters[key] = value
-            }
-        }
-
-        self.uri = String(params[0])
-    }
-
-    public func getCommaSeparatedHeaders() -> String {
-        var allHeaders = ""
-        for header in headers {
-            allHeaders += header + ","
-        }
-        return allHeaders
-    }
-
-    public func getHeader(for key: String) -> String? {
-        let lookup = key.lowercased()
-        for header in headers {
-            let parts = header.components(separatedBy: ":")
-            if parts[0].lowercased() == lookup {
-                return parts[1].trimmingCharacters(in: CharacterSet(charactersIn: " "))
-            }
-        }
-        return nil
-    }
-
-    public func headersAsJSON() throws -> Data {
-        var headerDict: [String: String] = [:]
-        for header in headers {
-            if header.hasPrefix(method.rawValue) {
-                headerDict["uri"] = header
-                continue
-            }
-            let parts = header.components(separatedBy: ":")
-            if parts.count > 1 {
-                headerDict[parts[0]] = parts[1].trimmingCharacters(in: CharacterSet(charactersIn: " "))
-            }
-        }
-
-        // Include the body as a Base64 Encoded entry
-        if let bodyData = messageData ?? messageBody?.data(using: .utf8) {
-            headerDict["x-base64-body"] = bodyData.base64EncodedString()
-        }
-        return try JSONSerialization.data(withJSONObject: headerDict, options: .sortedKeys)
-    }
-}
-
-struct _HTTPResponse {
-    enum Response: Int {
-        case OK = 200
-        case FOUND = 302
-        case BAD_REQUEST = 400
-        case NOT_FOUND = 404
-        case METHOD_NOT_ALLOWED = 405
-        case SERVER_ERROR = 500
-    }
-
-
-    private let responseCode: Int
-    private var headers: [String]
-    public let bodyData: Data
-
-    public init(responseCode: Int, headers: [String] = [], bodyData: Data) {
-        self.responseCode = responseCode
-        self.headers = headers
-        self.bodyData = bodyData
-
-        for header in headers {
-            if header.lowercased().hasPrefix("content-length") {
-                return
-            }
-        }
-        self.headers.append("Content-Length: \(bodyData.count)")
-    }
-
-    public init(response: Response, headers: [String] = [], bodyData: Data = Data()) {
-        self.init(responseCode: response.rawValue, headers: headers, bodyData: bodyData)
-    }
-
-    public init(response: Response, headers: String = _HTTPUtils.EMPTY, bodyData: Data) {
-        let headers = headers.split(separator: "\r\n").map { String($0) }
-        self.init(responseCode: response.rawValue, headers: headers, bodyData: bodyData)
-    }
-
-    public init(response: Response, headers: String = _HTTPUtils.EMPTY, body: String) throws {
-        guard let data = body.data(using: .utf8) else {
-            throw InternalServerError.badBody
-        }
-        self.init(response: response, headers: headers, bodyData: data)
-    }
-
-    public init(responseCode: Int, headers: [String] = [], body: String) throws {
-        guard let data = body.data(using: .utf8) else {
-            throw InternalServerError.badBody
-        }
-        self.init(responseCode: responseCode, headers: headers, bodyData: data)
-    }
-
-    public var header: String {
-        let responseCodeName = HTTPURLResponse.localizedString(forStatusCode: responseCode)
-        let statusLine = _HTTPUtils.VERSION + _HTTPUtils.SPACE + "\(responseCode)" + _HTTPUtils.SPACE + "\(responseCodeName)"
-        let header = headers.joined(separator: "\r\n")
-        return statusLine + (header != _HTTPUtils.EMPTY ? _HTTPUtils.CRLF + header : _HTTPUtils.EMPTY) + _HTTPUtils.CRLF2
-    }
-
-    mutating func addHeader(_ header: String) {
-        headers.append(header)
-    }
-}
-
-public class TestURLSessionServer: CustomStringConvertible {
-
-    public var description: String {
-        return "TestURLSessionServer @ 0x" + String(unsafeBitCast(self, to: UInt.self), radix: 16)
-    }
-
-    let capitals: [String:String] = ["Nepal": "Kathmandu",
-                                     "Peru": "Lima",
-                                     "Italy": "Rome",
-                                     "USA": "Washington, D.C.",
-                                     "UnitedStates": "USA",
-                                     "UnitedKingdom": "UK",
-                                     "UK": "London",
-                                     "country.txt": "A country is a region that is identified as a distinct national entity in political geography"]
-    let httpServer: _HTTPServer
-
-    internal init(httpServer: _HTTPServer) {
-        self.httpServer = httpServer
-        debugLog("\(self) - server \(httpServer)")
-    }
 
     public func readAndRespond() throws {
         let req = try httpServer.request()
@@ -722,6 +437,8 @@ public class TestURLSessionServer: CustomStringConvertible {
             debugLog("response: \(response)")
         }
     }
+
+    #endif
 
     func getResponse(request: _HTTPRequest) throws -> _HTTPResponse {
 
@@ -763,7 +480,7 @@ public class TestURLSessionServer: CustomStringConvertible {
             let components = uri.components(separatedBy: "/")
             if components.count >= 3, let count = Int(components[2]) {
                 let newLocation = (count <= 1) ? "/jsonBody" : "/redirect/\(count - 1)"
-                return try _HTTPResponse(response: .FOUND, headers: "Location: \(newLocation)", body: "Redirecting to \(newLocation)")
+                return try _HTTPResponse(response: .FOUND, headers: ["Location: \(newLocation)"], body: "Redirecting to \(newLocation)")
             }
         }
 
@@ -797,16 +514,16 @@ public class TestURLSessionServer: CustomStringConvertible {
         }
 
         if uri == "/requestCookies" {
-            return try _HTTPResponse(response: .OK, headers: "Set-Cookie: fr=anjd&232; Max-Age=7776000; path=/\r\nSet-Cookie: nm=sddf&232; Max-Age=7776000; path=/; domain=.swift.org; secure; httponly\r\n", body: "")
+            return try _HTTPResponse(response: .OK, headers: ["Set-Cookie: fr=anjd&232; Max-Age=7776000; path=/", "Set-Cookie: nm=sddf&232; Max-Age=7776000; path=/; domain=.swift.org; secure; httponly"], body: "")
         }
 
         if uri == "/echoHeaders" {
             let text = request.getCommaSeparatedHeaders()
-            return try _HTTPResponse(response: .OK, headers: "Content-Length: \(text.data(using: .utf8)!.count)", body: text)
+            return try _HTTPResponse(response: .OK, headers: ["Content-Length: \(text.data(using: .utf8)!.count)"], body: text)
         }
         
         if uri == "/redirectToEchoHeaders" {
-            return try _HTTPResponse(response: .FOUND, headers: "location: /echoHeaders\r\nSet-Cookie: redirect=true; Max-Age=7776000; path=/", body: "")
+            return try _HTTPResponse(response: .FOUND, headers: ["location: /echoHeaders", "Set-Cookie: redirect=true; Max-Age=7776000; path=/"], body: "")
         }
 
         if uri == "/UnitedStates" {
@@ -817,7 +534,7 @@ public class TestURLSessionServer: CustomStringConvertible {
             let port = host.components(separatedBy: ":")[1]
             let newPort = Int(port)! + 1
             let newHost = ip + ":" + String(newPort)
-            let httpResponse = try _HTTPResponse(response: .FOUND, headers: "Location: http://\(newHost + "/" + value)", body: text)
+            let httpResponse = try _HTTPResponse(response: .FOUND, headers: ["Location: http://\(newHost)/\(value)"], body: text)
             return httpResponse 
         }
 
@@ -850,7 +567,7 @@ public class TestURLSessionServer: CustomStringConvertible {
             let value = capitals[String(uri.dropFirst())]!
             let text = request.getCommaSeparatedHeaders()
             //Response header with only path to the location to redirect.
-            let httpResponse = try _HTTPResponse(response: .FOUND, headers: "Location: \(value)", body: text)
+            let httpResponse = try _HTTPResponse(response: .FOUND, headers: ["Location: \(value)"], body: text)
             return httpResponse
         }
         
@@ -862,7 +579,7 @@ public class TestURLSessionServer: CustomStringConvertible {
             let text = request.getCommaSeparatedHeaders()
             let host = request.headers[1].components(separatedBy: " ")[1]
             let ip = host.components(separatedBy: ":")[0]
-            let httpResponse = try _HTTPResponse(response: .FOUND, headers: "Location: http://\(ip)/redirected-with-default-port", body: text)
+            let httpResponse = try _HTTPResponse(response: .FOUND, headers: ["Location: http://\(ip)/redirected-with-default-port"], body: text)
             return httpResponse
 
         }
@@ -875,7 +592,7 @@ public class TestURLSessionServer: CustomStringConvertible {
                                    0xa3, 0x1c, 0x29, 0x1c, 0x0c, 0x00, 0x00, 0x00])
             return _HTTPResponse(response: .OK,
                                  headers: ["Content-Length: \(helloWorld.count)",
-                                           "Content-Encoding: gzip"].joined(separator: _HTTPUtils.CRLF),
+                                           "Content-Encoding: gzip"].joined(separator: "\r\n"),
                                  bodyData: helloWorld)
         }
         
@@ -890,7 +607,7 @@ public class TestURLSessionServer: CustomStringConvertible {
         }
 
         guard let capital = capitals[String(uri.dropFirst())] else {
-            return _HTTPResponse(response: .NOT_FOUND)
+            return try _HTTPResponse(response: .NOT_FOUND)
         }
         return try _HTTPResponse(response: .OK, body: capital)
     }
@@ -904,9 +621,9 @@ public class TestURLSessionServer: CustomStringConvertible {
         switch statusCode {
             case 300...303, 305...308:
                 let location = request.parameters["location"] ?? "/" + request.method.rawValue.lowercased()
-                let body = "Redirecting to \(request.method) \(location)"
+                let body = "Redirecting to \(request.method) \(location)".data(using: .utf8)!
                 let headers = ["Content-Type: test/plain", "Location: \(location)"]
-                response = try _HTTPResponse(responseCode: statusCode, headers: headers, body: body)
+                response = _HTTPResponse(responseCode: statusCode, headers: headers, bodyData: body)
 
             case 401:
                 let headers = ["Content-Type: application/json", "Content-Length: \(bodyData.count)"]
@@ -923,22 +640,6 @@ public class TestURLSessionServer: CustomStringConvertible {
     }
 }
 
-struct ServerError : Error {
-    let operation: String
-    let errno: CInt
-    let file: String
-    let line: UInt
-    var _code: Int { return Int(errno) }
-    var _domain: String { return NSPOSIXErrorDomain }
-}
-
-
-extension ServerError : CustomStringConvertible {
-    var description: String {
-        let s = String(validatingUTF8: strerror(errno)) ?? ""
-        return "\(operation) failed: \(s) (\(_code))"
-    }
-}
 
 enum InternalServerError : Error {
     case socketAlreadyClosed
@@ -951,9 +652,7 @@ class LoopbackServerTest : XCTestCase {
     private static let staticSyncQ = DispatchQueue(label: "org.swift.TestFoundation.HTTPServer.StaticSyncQ")
 
     private static var _serverPort: Int = -1
-    private static var _serverActive = false
-    private static var testServer: _HTTPServer? = nil
-
+    private static var loopGroup: MultiThreadedEventLoopGroup?
 
     static var serverPort: Int {
         get {
@@ -964,45 +663,40 @@ class LoopbackServerTest : XCTestCase {
         }
     }
 
-    static var serverActive: Bool {
-        get { return staticSyncQ.sync { _serverActive } }
-        set { staticSyncQ.sync { _serverActive = newValue }}
-    }
-
     override class func setUp() {
         super.setUp()
 
-        var _serverPort = 0
         let dispatchGroup = DispatchGroup()
+        var _serverPort = 0
 
         func runServer() throws {
-            testServer = try _HTTPServer(port: nil)
-            _serverPort = Int(testServer!.port)
-            serverActive = true
-            dispatchGroup.leave()
+            loopGroup = MultiThreadedEventLoopGroup(numberOfThreads: 1)
+            let reuseAddrOpt = ChannelOptions.socket(SocketOptionLevel(SOL_SOCKET), SO_REUSEADDR)
 
-            while serverActive {
-                do {
-                    let httpServer = try testServer!.listen()
-                    globalDispatchQueue.async {
-                        let subServer = TestURLSessionServer(httpServer: httpServer)
-                        do {
-                            try subServer.readAndRespond()
-                        } catch {
-                            NSLog("reandAndRespond: \(error)")
-                        }
-                    }
-                } catch {
-                    if (serverActive) { // Ignore errors thrown on shutdown
-                        NSLog("httpServer: \(error)")
+            let bootstrap = ServerBootstrap(group: loopGroup!)
+                .serverChannelOption(ChannelOptions.backlog, value: 256)
+                .serverChannelOption(reuseAddrOpt, value: 1)
+                .childChannelInitializer { channel in
+                    channel.pipeline.configureHTTPServerPipeline().flatMap {
+                        channel.pipeline.addHandler(TestURLSessionServer())
                     }
                 }
+                .childChannelOption(ChannelOptions.socket(IPPROTO_TCP, TCP_NODELAY), value: 1)
+                .childChannelOption(reuseAddrOpt, value: 1)
+                .childChannelOption(ChannelOptions.maxMessagesPerRead, value: 1)
+
+            do {
+                let addr = try SocketAddress(ipAddress: "127.0.0.1", port: _serverPort)
+                let serverChannel = try bootstrap.bind(to: addr).wait()
+                _serverPort = serverChannel.localAddress?.port ?? -1
+                debugLog("Server running on: \(serverChannel.localAddress!))")
+                dispatchGroup.leave()
+                try serverChannel.closeFuture.wait() // runs forever
+                debugLog("Server finished runing")
             }
-            serverPort = -2
         }
 
         dispatchGroup.enter()
-
         globalDispatchQueue.async {
             do {
                 try runServer()
@@ -1010,9 +704,7 @@ class LoopbackServerTest : XCTestCase {
                 NSLog("runServer: \(error)")
             }
         }
-
         let timeout = DispatchTime(uptimeNanoseconds: DispatchTime.now().uptimeNanoseconds + 2_000_000_000)
-
         guard dispatchGroup.wait(timeout: timeout) == .success, _serverPort > 0 else {
             fatalError("Timedout waiting for server to be ready")
         }
@@ -1020,8 +712,8 @@ class LoopbackServerTest : XCTestCase {
     }
 
     override class func tearDown() {
-        serverActive = false
-        try? testServer?.stop()
+        serverPort = -2
+        try? loopGroup?.syncShutdownGracefully()
         super.tearDown()
     }
 }
