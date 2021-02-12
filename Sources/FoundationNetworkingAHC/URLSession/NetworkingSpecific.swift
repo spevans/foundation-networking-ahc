@@ -6,7 +6,11 @@
 // See http://swift.org/LICENSE.txt for license information
 // See http://swift.org/CONTRIBUTORS.txt for the list of Swift project authors
 
-import Foundation
+#if canImport(SwiftFoundation)
+    import SwiftFoundation
+#else
+    import Foundation
+#endif
 
 internal func NSUnimplemented(_ fn: String = #function, file: StaticString = #file, line: UInt = #line) -> Never {
     #if os(Android)

@@ -17,9 +17,11 @@
 ///
 // -----------------------------------------------------------------------------
 
-import Foundation
-
-
+#if canImport(SwiftFoundation)
+    import SwiftFoundation
+#else
+    import Foundation
+#endif
 
 extension _HTTPURLProtocol {
     /// State related to an ongoing transfer.

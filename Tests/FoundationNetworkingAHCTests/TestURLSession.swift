@@ -41,7 +41,12 @@
 @testable import class FoundationNetworkingAHC.URLSessionUploadTask
 #endif
 
-import Foundation
+#if canImport(SwiftFoundation)
+    import SwiftFoundation
+#else
+    import Foundation
+#endif
+
 import XCTest
 
 

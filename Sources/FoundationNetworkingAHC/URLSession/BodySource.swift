@@ -16,7 +16,11 @@
 ///
 // -----------------------------------------------------------------------------
 
-import Foundation
+#if canImport(SwiftFoundation)
+    import SwiftFoundation
+#else
+    import Foundation
+#endif
 import Dispatch
 
 private let CFURLSessionMaxWriteSize = 4096

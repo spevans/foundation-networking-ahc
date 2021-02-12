@@ -10,7 +10,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-import Foundation
+#if canImport(SwiftFoundation)
+    import SwiftFoundation
+#else
+    import Foundation
+#endif
 
 public struct URLRequest: Equatable, Hashable {
     public typealias ReferenceType = NSURLRequest

@@ -16,7 +16,11 @@
 ///
 // -----------------------------------------------------------------------------
 
-import Foundation
+#if canImport(SwiftFoundation)
+    import SwiftFoundation
+#else
+    import Foundation
+#endif
 
 extension _HTTPURLProtocol {
     /// A native protocol like FTP or HTTP header being parsed.

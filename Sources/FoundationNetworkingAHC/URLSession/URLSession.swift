@@ -162,7 +162,11 @@
 // -----------------------------------------------------------------------------
 
 
-import Foundation
+#if canImport(SwiftFoundation)
+    import SwiftFoundation
+#else
+    import Foundation
+#endif
 
 extension URLSession {
     public enum DelayedRequestDisposition {

@@ -9,8 +9,11 @@
 
 // Protocol implementation of data: URL scheme
 
-import Foundation
-
+#if canImport(SwiftFoundation)
+    import SwiftFoundation
+#else
+    import Foundation
+#endif
 
 // Iterate through a SubString validating that the input is ASCII and converting any %xx
 // percent endcoded hex sequences to a UInt8 byte.

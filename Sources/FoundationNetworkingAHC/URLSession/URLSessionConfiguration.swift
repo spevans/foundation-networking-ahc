@@ -15,7 +15,11 @@
 ///
 // -----------------------------------------------------------------------------
 
-import Foundation
+#if canImport(SwiftFoundation)
+    import SwiftFoundation
+#else
+    import Foundation
+#endif
 
 /// Configuration options for an URLSession.
 ///

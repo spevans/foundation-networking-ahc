@@ -15,7 +15,11 @@
 ///
 // -----------------------------------------------------------------------------
 
-import Foundation
+#if canImport(SwiftFoundation)
+    import SwiftFoundation
+#else
+    import Foundation
+#endif
 
 private class Bag<Element> {
     var values: [Element] = []

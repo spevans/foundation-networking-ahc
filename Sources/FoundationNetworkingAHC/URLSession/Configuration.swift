@@ -16,7 +16,11 @@
 ///
 // -----------------------------------------------------------------------------
 
-import Foundation
+#if canImport(SwiftFoundation)
+    import SwiftFoundation
+#else
+    import Foundation
+#endif
 
 internal extension URLSession {
     /// This is an immutable / `struct` version of `URLSessionConfiguration`.

@@ -17,7 +17,11 @@
 ///
 // -----------------------------------------------------------------------------
 
-import Foundation
+#if canImport(SwiftFoundation)
+    import SwiftFoundation
+#else
+    import Foundation
+#endif
 
 internal extension _HTTPURLProtocol._ResponseHeaderLines {
     /// Create an `NSHTTPRULResponse` from the lines.

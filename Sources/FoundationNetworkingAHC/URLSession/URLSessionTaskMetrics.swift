@@ -15,7 +15,11 @@
 ///
 // -----------------------------------------------------------------------------
 
-import Foundation
+#if canImport(SwiftFoundation)
+    import SwiftFoundation
+#else
+    import Foundation
+#endif
 
 open class URLSessionTaskMetrics : NSObject {
     public internal(set) var transactionMetrics: [URLSessionTaskTransactionMetrics] = []
